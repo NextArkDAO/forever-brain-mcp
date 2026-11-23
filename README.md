@@ -22,8 +22,57 @@ Built with FastMCP for POSIX hosts. Verified host: Hermes Agent 0.23.3 on macOS.
 ## 60-Second Quickstart
 
 ### 1. Install
+
+In a Python 3.11+ virtual environment on a POSIX host, run:
+
 ```bash
+git clone https://github.com/NextArkDAO/forever-brain-mcp.git
+cd forever-brain-mcp
 pip install -e .
+```
+
+To run the test suite from the repository root:
+
+```bash
+pip install -e '.[dev]'
+python -m pytest -q
+```
+
+#### Try point-in-time recall
+
+This example calls the MCP tools in a temporary vault. It uses the first write’s returned `recorded_at` as the historical cutoff.
+
+```bash
+FOREVER_BRAIN_DIR="$(mktemp -d)" python - <<'PYTHON'
+import asyncio
+from fastmcp import Client
+from forever_brain_mcp.server import mcp
+
+async def demo():
+    async with Client(mcp) as client:
+        saved = await client.call_tool("brain_remember", {
+            "record_id": "demo.room.v1", "topic": "demo.room",
+            "text": "Meet in Room A.", "source": "fictional invitation",
+        })
+        cutoff = saved.data["record"]["recorded_at"]
+        await asyncio.sleep(1.1)  # The vault records timestamps to the second.
+        await client.call_tool("brain_correct", {
+            "old_record_id": "demo.room.v1", "new_record_id": "demo.room.v2",
+            "text": "Meet in Room B.", "source": "fictional update",
+        })
+        for label, filters in [("As of first write", {"as_of": cutoff}), ("Now", {})]:
+            result = await client.call_tool("brain_recall", {"query": "room", **filters})
+            print(label, result.data["records"][0]["text"], sep=": ")
+
+asyncio.run(demo())
+PYTHON
+```
+
+Expected output:
+
+```text
+As of first write: Meet in Room A.
+Now: Meet in Room B.
 ```
 
 ### 2. Wire into Hermes Agent (`~/.hermes/config.yaml`)
