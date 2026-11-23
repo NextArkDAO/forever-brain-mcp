@@ -4,21 +4,43 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forever-brain-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first, encrypted, source-attributed, bi-temporal memory MCP server for Hermes, Claude, Cursor, Codex, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "NextArk" }]
 keywords = ["mcp", "fastmcp", "hermes", "memory", "ai-agents", "forever-brain"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security :: Cryptography",
+]
 dependencies = [
     "fastmcp>=2.0.0",
     "cryptography>=42.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/NextArkDAO/forever-brain-mcp"
+Repository = "https://github.com/NextArkDAO/forever-brain-mcp"
+Issues = "https://github.com/NextArkDAO/forever-brain-mcp/issues"
+Releases = "https://github.com/NextArkDAO/forever-brain-mcp/releases"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "build>=1.2.0",
+    "twine>=5.0.0",
 ]
 
 [project.scripts]
@@ -27,9 +49,9 @@ forever-brain-mcp = "forever_brain_mcp.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/forever_brain_mcp"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests", "/README.md", "/LICENSE", "/pyproject.toml"]
 exclude = ["**/__pycache__", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
