@@ -1,0 +1,173 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, verify, and smoke-test distributions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          python - <<'PY'
+          import os, tomllib
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "src")
+          import forever_brain_mcp
+
+          tag_ver = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          pyproject_ver = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          pkg_ver = forever_brain_mcp.__version__
+          assert tag_ver == pyproject_ver == pkg_ver, (
+              f"Version mismatch: tag={tag_ver!r}, pyproject={pyproject_ver!r}, __version__={pkg_ver!r}"
+          )
+          print(f"Verified release version: {pkg_ver}")
+          PY
+
+      - name: Install package and dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run full test suite
+        run: pytest -v
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Strict Twine metadata check
+        run: twine check --strict dist/*
+
+      - name: Record SHA-256 checksums
+        run: |
+          sha256sum dist/*.whl dist/*.tar.gz
+
+      - name: Isolated wheel stdio smoke test
+        run: |
+          python -m venv /tmp/fb-release-smoke
+          /tmp/fb-release-smoke/bin/pip install --upgrade pip
+          /tmp/fb-release-smoke/bin/pip install dist/*.whl
+          /tmp/fb-release-smoke/bin/python - <<'PY'
+          import asyncio, os, tempfile
+          from fastmcp import Client
+          from fastmcp.client.transports import StdioTransport
+
+          async def smoke():
+              with tempfile.TemporaryDirectory() as tmp:
+                  transport = StdioTransport(
+                      command="/tmp/fb-release-smoke/bin/forever-brain-mcp",
+                      args=[],
+                      env={**os.environ, "FOREVER_BRAIN_DIR": tmp},
+                  )
+                  async with Client(transport) as client:
+                      tools = await client.list_tools()
+                      names = {t.name for t in tools}
+                      assert names == {"brain_health", "brain_correct", "brain_recall",
+                                       "brain_remember", "brain_trace", "brain_startup"}
+                      res = await client.call_tool("brain_health", {})
+                      assert res.data["status"] == "ok", f"Unexpected health: {res.data}"
+                      print("RELEASE WHEEL SMOKE PASSED:", sorted(names))
+
+          asyncio.run(smoke())
+          PY
+
+      - name: Upload built distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI via Trusted Publishing (OIDC)
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/forever-brain-mcp
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+          print-hash: true
+
+  verify-pypi:
+    name: Post-publish uvx verification gate
+    needs: [publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Verify live uvx install from PyPI
+        run: |
+          VER=$(python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          echo "Waiting for PyPI CDN propagation for forever-brain-mcp==${VER}..."
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "https://pypi.org/pypi/forever-brain-mcp/${VER}/json" >/dev/null 2>&1; then
+              echo "PyPI JSON endpoint confirmed for ${VER}"
+              break
+            fi
+            if [ "$i" = 6 ]; then exit 1; fi
+            sleep 10
+          done
+          uv run --isolated --no-project --with fastmcp python - <<PY
+          import asyncio, os, tempfile
+          from fastmcp import Client
+          from fastmcp.client.transports import StdioTransport
+
+          async def verify():
+              with tempfile.TemporaryDirectory() as tmp:
+                  transport = StdioTransport(
+                      command="uvx",
+                      args=["--refresh", "forever-brain-mcp==${VER}"],
+                      env={**os.environ, "FOREVER_BRAIN_DIR": tmp},
+                  )
+                  async with Client(transport) as client:
+                      tools = await client.list_tools()
+                      names = {t.name for t in tools}
+                      assert "brain_health" in names and "brain_correct" in names
+                      health = await client.call_tool("brain_health", {})
+                      assert health.data["status"] == "ok", f"Unexpected health: {health.data}"
+                      await client.call_tool("brain_remember", {"record_id": "check.one", "topic": "check", "text": "first", "source": "smoke"})
+                      await client.call_tool("brain_correct", {"old_record_id": "check.one", "new_record_id": "check.two", "text": "second", "source": "smoke"})
+                      trace = await client.call_tool("brain_trace", {"record_id": "check.one"})
+                      assert trace.data["current_truth_id"] == "check.two"
+                      print("LIVE PYPI UVX VERIFICATION PASSED:", sorted(names))
+
+          asyncio.run(verify())
+          PY
